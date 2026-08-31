@@ -1024,6 +1024,181 @@ function PoemEditor({ initial, onSave, onClose }) {
     speech.supported ? speech.listening ? "Aufnahme l\xE4uft\u2026" : "Sprechen" : "Nicht verf\xFCgbar"
   ), /* @__PURE__ */ React.createElement("button", { className: "chipbtn", onClick: () => fileInputRef.current.click() }, /* @__PURE__ */ React.createElement("span", { className: "ic" }, "\u{1F4F7}"), "Foto / Scan"), /* @__PURE__ */ React.createElement("input", { ref: fileInputRef, type: "file", accept: "image/*", capture: "environment", style: { display: "none" }, onChange: handlePhoto })), photoPreview && /* @__PURE__ */ React.createElement("img", { className: "photo-preview", src: photoPreview, alt: "Foto des Gedichts" }), ocrStatus && /* @__PURE__ */ React.createElement("div", { className: "ocr-status" }, ocrStatus), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", null, "Text"), /* @__PURE__ */ React.createElement("textarea", { value: text, onChange: (e) => setText(e.target.value), placeholder: "Hier entsteht dein Gedicht \u2014 getippt, gesprochen oder abfotografiert." })), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", null, "Stimmung / Thema"), /* @__PURE__ */ React.createElement("div", { className: "tagpicker" }, TAGS.map((t) => /* @__PURE__ */ React.createElement("button", { key: t, className: tags.includes(t) ? "on" : "", onClick: () => toggleTag(t) }, t)))), /* @__PURE__ */ React.createElement("button", { className: "save-btn", onClick: handleSave }, "Gedicht sichern"), /* @__PURE__ */ React.createElement("button", { className: "cancel-btn", onClick: onClose }, "Abbrechen")));
 }
+/* =========================================================
+   SICHERHEITSKOPIE DER EIGENEN GEDICHTE
+
+   Es gab bisher nur einen Export. Eine Sicherung, die sich nicht
+   wieder einlesen lässt, hilft im Ernstfall aber nicht. Hier ist
+   der Rückweg — und weil ein zurückgeholtes Archiv niemals neuere
+   Gedichte löschen darf, wird zusammengeführt statt ersetzt.
+   ========================================================= */
+
+const SICHERUNG_KENNUNG = "gedichteecke-sicherung";
+const SICHERUNG_STAND_KEY = "literatura.letzteSicherung";
+
+function heuteAlsDatum() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function ladeSicherungsstand() {
+  try {
+    const roh = localStorage.getItem(SICHERUNG_STAND_KEY);
+    return roh ? JSON.parse(roh) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function merkeSicherung(anzahl) {
+  try {
+    localStorage.setItem(SICHERUNG_STAND_KEY, JSON.stringify({ datum: heuteAlsDatum(), anzahl }));
+  } catch (e) {
+  }
+}
+
+function baueSicherung(poems) {
+  return { kennung: SICHERUNG_KENNUNG, version: 1, erstellt: new Date().toISOString(), gedichte: poems };
+}
+
+// Nimmt sowohl die neue Form {kennung, gedichte} als auch die alte an,
+// bei der die Datei nur eine blanke Liste war. Wer schon eine Datei
+// gespeichert hat, soll sie weiterhin einlesen können.
+function leseGedichteAusDatei(objekt) {
+  const liste = Array.isArray(objekt)
+    ? objekt
+    : (objekt && Array.isArray(objekt.gedichte) ? objekt.gedichte : null);
+  if (!liste) return null;
+
+  const erlaubteQuellen = ["text", "sprache", "kamera"];
+  return liste
+    .filter((p) => p && typeof p === "object" && typeof p.text === "string" && p.text.trim())
+    .map((p) => ({
+      id: typeof p.id === "string" && p.id ? p.id : uid(),
+      title: typeof p.title === "string" && p.title.trim() ? p.title.trim() : "Ohne Titel",
+      text: p.text,
+      tags: Array.isArray(p.tags) ? p.tags.filter((t) => typeof t === "string") : [],
+      source: erlaubteQuellen.includes(p.source) ? p.source : "text",
+      inspiredBy: typeof p.inspiredBy === "string" ? p.inspiredBy : null,
+      createdAt: /^\d{4}-\d{2}-\d{2}$/.test(p.createdAt) ? p.createdAt : heuteAlsDatum()
+    }));
+}
+
+function fuegeZusammen(vorhandene, geladene) {
+  const bekannt = new Set(vorhandene.map((p) => p.id));
+  const neue = geladene.filter((p) => !bekannt.has(p.id));
+  return { liste: [...neue, ...vorhandene], neu: neue.length, schonDa: geladene.length - neue.length };
+}
+
+function alsLesbarerText(poems) {
+  const trenner = "\n\n" + "—".repeat(28) + "\n\n";
+  return poems
+    .map((p) => {
+      const kopf = [p.createdAt, p.inspiredBy ? "gewidmet: " + p.inspiredBy : null].filter(Boolean).join(" · ");
+      const fuss = p.tags && p.tags.length ? "(" + p.tags.join(", ") + ")" : null;
+      return [p.title, kopf, "", p.text, fuss].filter((z) => z !== null).join("\n");
+    })
+    .join(trenner);
+}
+
+function dateiHerunterladen(inhalt, name, typ) {
+  const blob = new Blob([inhalt], { type: typ });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function Sicherung({ poems, setPoems }) {
+  const [meldung, setMeldung] = useState(null);
+  const [stand, setStand] = useState(ladeSicherungsstand);
+
+  const datumStueck = heuteAlsDatum();
+  const seitLetzterSicherung = stand ? poems.length - stand.anzahl : poems.length;
+
+  const alsDateiSichern = () => {
+    if (poems.length === 0) return;
+    dateiHerunterladen(JSON.stringify(baueSicherung(poems), null, 2), "meine-gedichte-" + datumStueck + ".json", "application/json");
+    merkeSicherung(poems.length);
+    setStand({ datum: datumStueck, anzahl: poems.length });
+    setMeldung({ gut: true, text: "Gesichert. Bewahre die Datei irgendwo auf, wo du sie wiederfindest — zum Beispiel in einer E-Mail an dich selbst." });
+  };
+
+  const zumAusdrucken = () => {
+    if (poems.length === 0) return;
+    dateiHerunterladen(alsLesbarerText(poems), "meine-gedichte-" + datumStueck + ".txt", "text/plain;charset=utf-8");
+    setMeldung({ gut: true, text: "Als lesbarer Text gespeichert — diese Datei lässt sich öffnen und ausdrucken, ganz ohne die App." });
+  };
+
+  const dateiGewaehlt = (ereignis) => {
+    const datei = ereignis.target.files && ereignis.target.files[0];
+    ereignis.target.value = "";
+    if (!datei) return;
+    setMeldung(null);
+
+    const leser = new FileReader();
+    leser.onerror = () => setMeldung({ gut: false, text: "Die Datei liess sich nicht lesen." });
+    leser.onload = () => {
+      let objekt;
+      try {
+        objekt = JSON.parse(String(leser.result));
+      } catch (e) {
+        setMeldung({ gut: false, text: "Das ist keine Gedicht-Datei. Suche nach einer Datei, die mit „meine-gedichte“ beginnt und auf .json endet." });
+        return;
+      }
+      const geladene = leseGedichteAusDatei(objekt);
+      if (!geladene) {
+        setMeldung({ gut: false, text: "In dieser Datei stehen keine Gedichte." });
+        return;
+      }
+      if (geladene.length === 0) {
+        setMeldung({ gut: false, text: "Die Datei enthält keine lesbaren Gedichte." });
+        return;
+      }
+      const ergebnis = fuegeZusammen(poems, geladene);
+      setPoems(ergebnis.liste);
+      setMeldung({
+        gut: true,
+        text: ergebnis.neu === 0
+          ? "Alle " + geladene.length + " Gedichte aus der Datei waren schon da. Es hat sich nichts geändert."
+          : ergebnis.neu + (ergebnis.neu === 1 ? " Gedicht wurde" : " Gedichte wurden") + " zurückgeholt"
+            + (ergebnis.schonDa > 0 ? ", " + ergebnis.schonDa + " waren schon da" : "") + "."
+      });
+    };
+    leser.readAsText(datei);
+  };
+
+  const knopf = { marginTop: 6, marginRight: 8 };
+
+  return /* @__PURE__ */ React.createElement("div", { style: { marginTop: 26, paddingTop: 18, borderTop: "1px solid rgba(0,0,0,0.12)" } },
+    /* @__PURE__ */ React.createElement("p", { className: "eyebrow" }, "Sicherheitskopie"),
+    /* @__PURE__ */ React.createElement("p", { className: "pagesub", style: { marginTop: 2 } },
+      "Deine Gedichte liegen nur in diesem Browser. Speichere sie ab und zu als Datei — dann sind sie auch nach einem Gerätewechsel noch da."),
+
+    poems.length > 0 && seitLetzterSicherung > 0 && /* @__PURE__ */ React.createElement("p",
+      { className: "pagesub", style: { marginTop: 8, fontStyle: "italic" } },
+      stand
+        ? "Seit der letzten Sicherung am " + stand.datum.split("-").reverse().join(".") + " "
+          + (seitLetzterSicherung === 1 ? "ist ein Gedicht" : "sind " + seitLetzterSicherung + " Gedichte") + " dazugekommen."
+        : "Noch nie gesichert."),
+
+    meldung && /* @__PURE__ */ React.createElement("p",
+      { className: "pagesub", style: { marginTop: 10, color: meldung.gut ? "#2f6b46" : "#8a2b2b" } },
+      meldung.text),
+
+    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 0 } },
+      poems.length > 0 && /* @__PURE__ */ React.createElement("button", { className: "cancel-btn", style: knopf, onClick: alsDateiSichern }, "↓ Als Datei sichern"),
+      /* @__PURE__ */ React.createElement("label", { className: "cancel-btn", style: { ...knopf, display: "inline-block" } },
+        "↑ Aus Datei zurückholen",
+        /* @__PURE__ */ React.createElement("input", { type: "file", accept: "application/json,.json", onChange: dateiGewaehlt, style: { display: "none" } })),
+      poems.length > 0 && /* @__PURE__ */ React.createElement("button", { className: "cancel-btn", style: knopf, onClick: zumAusdrucken }, "↓ Zum Ausdrucken")
+    )
+  );
+}
+
 function MyPoems({ poems, setPoems, editorInit, setEditorInit }) {
   const [showEditor, setShowEditor] = useState(false);
   useEffect(() => {
@@ -1047,16 +1222,7 @@ function MyPoems({ poems, setPoems, editorInit, setEditorInit }) {
     setShowEditor(false);
     setEditorInit(null);
   };
-  const exportPoems = () => {
-    const blob = new Blob([JSON.stringify(poems, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "meine-gedichte.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-  return /* @__PURE__ */ React.createElement("main", null, /* @__PURE__ */ React.createElement("p", { className: "eyebrow" }, "Archiv"), /* @__PURE__ */ React.createElement("h1", { className: "pagetitle" }, "Meine Gedichte"), /* @__PURE__ */ React.createElement("p", { className: "pagesub" }, "Getippt, gesprochen oder mit der Kamera eingefangen \u2014 alles an einem Ort, nur f\xFCr dich."), poems.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "empty" }, /* @__PURE__ */ React.createElement("div", { className: "ic" }, "\u2766"), /* @__PURE__ */ React.createElement("p", null, "Noch kein Gedicht gesichert. Tippe unten rechts auf das Plus, um dein erstes einzutragen \u2014 von Hand, per Sprache oder mit einem Foto.")), poems.map((p) => /* @__PURE__ */ React.createElement("div", { className: "poemcard", key: p.id }, /* @__PURE__ */ React.createElement("div", { className: "rowbtns" }, /* @__PURE__ */ React.createElement("button", { className: "iconbtn", onClick: () => openEdit(p) }, "\u270E"), /* @__PURE__ */ React.createElement("button", { className: "iconbtn", onClick: () => remove(p.id) }, "\u2715")), /* @__PURE__ */ React.createElement("h3", null, p.title), /* @__PURE__ */ React.createElement("div", { className: "meta" }, /* @__PURE__ */ React.createElement("span", null, p.createdAt), /* @__PURE__ */ React.createElement("span", { className: "src" }, p.source === "sprache" ? "Sprachaufnahme" : p.source === "kamera" ? "Foto-Scan" : "Text")), /* @__PURE__ */ React.createElement("div", { className: "text" }, p.text), p.tags?.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "tags" }, p.tags.map((t) => /* @__PURE__ */ React.createElement("span", { className: "tagchip", key: t }, t))), p.inspiredBy && /* @__PURE__ */ React.createElement("div", { className: "inspired" }, "\u2712\uFE0E gewidmet: ", p.inspiredBy))), poems.length > 0 && /* @__PURE__ */ React.createElement("button", { className: "cancel-btn", style: { marginTop: 6 }, onClick: exportPoems }, "\u2193 Als Datei sichern"), /* @__PURE__ */ React.createElement("button", { className: "fab", onClick: openNew, "aria-label": "Neues Gedicht" }, "+"), showEditor && /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("main", null, /* @__PURE__ */ React.createElement("p", { className: "eyebrow" }, "Archiv"), /* @__PURE__ */ React.createElement("h1", { className: "pagetitle" }, "Meine Gedichte"), /* @__PURE__ */ React.createElement("p", { className: "pagesub" }, "Getippt, gesprochen oder mit der Kamera eingefangen \u2014 alles an einem Ort, nur f\xFCr dich."), poems.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "empty" }, /* @__PURE__ */ React.createElement("div", { className: "ic" }, "\u2766"), /* @__PURE__ */ React.createElement("p", null, "Noch kein Gedicht gesichert. Tippe unten rechts auf das Plus, um dein erstes einzutragen \u2014 von Hand, per Sprache oder mit einem Foto.")), poems.map((p) => /* @__PURE__ */ React.createElement("div", { className: "poemcard", key: p.id }, /* @__PURE__ */ React.createElement("div", { className: "rowbtns" }, /* @__PURE__ */ React.createElement("button", { className: "iconbtn", onClick: () => openEdit(p) }, "\u270E"), /* @__PURE__ */ React.createElement("button", { className: "iconbtn", onClick: () => remove(p.id) }, "\u2715")), /* @__PURE__ */ React.createElement("h3", null, p.title), /* @__PURE__ */ React.createElement("div", { className: "meta" }, /* @__PURE__ */ React.createElement("span", null, p.createdAt), /* @__PURE__ */ React.createElement("span", { className: "src" }, p.source === "sprache" ? "Sprachaufnahme" : p.source === "kamera" ? "Foto-Scan" : "Text")), /* @__PURE__ */ React.createElement("div", { className: "text" }, p.text), p.tags?.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "tags" }, p.tags.map((t) => /* @__PURE__ */ React.createElement("span", { className: "tagchip", key: t }, t))), p.inspiredBy && /* @__PURE__ */ React.createElement("div", { className: "inspired" }, "\u2712\uFE0E gewidmet: ", p.inspiredBy))), /* @__PURE__ */ React.createElement(Sicherung, { poems, setPoems }), /* @__PURE__ */ React.createElement("button", { className: "fab", onClick: openNew, "aria-label": "Neues Gedicht" }, "+"), showEditor && /* @__PURE__ */ React.createElement(
     PoemEditor,
     {
       initial: editorInit,

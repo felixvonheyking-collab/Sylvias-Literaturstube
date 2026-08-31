@@ -13,7 +13,7 @@
  * WICHTIG bei Änderungen: VERSION hochzählen.
  */
 
-const VERSION = '2026-08-31-1';
+const VERSION = '2026-08-31-2';
 const CACHE = 'gedichteecke-' + VERSION;
 
 const DATEIEN = [
